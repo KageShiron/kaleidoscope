@@ -1,11 +1,12 @@
-
+#include "llvm/ADT/STLExtras.h"
 #include <string>
-#include <c++/iostream>
-#include <c++/memory>
-#include <c++/vector>
-#include <c++/map>
+#include <memory>
+#include <vector>
+#include <map>
+#include <iostream>
 
-enum Token {
+
+enum Tokenn {
     tok_eof = -1,
     tok_def = -2,
     tok_extern = -3,
@@ -134,16 +135,16 @@ static int GetTokPrecedence() {
 }
 
 std::unique_ptr<ExprAST> LogError(const char *str){
-    fprintf(stderr,"Error: %s\n" , Str);
+    fprintf(stderr,"Error: %s\n" , str);
     return nullptr;
 }
 
-std::unique_ptr<PrototypeAST> LogErrorP(const char *Str){
+std::unique_ptr<PrototypeAST> LogErrorP(const char *str){
     LogError(str);
     return nullptr;
 }
 
-static std::unique_ptr<ExprAST> ParserExpression();
+static std::unique_ptr<ExprAST> ParseExpression();
 
 // numberexpr ::= number
 static std::unique_ptr<ExprAST> ParserNumberExpr(){
@@ -151,3 +152,109 @@ static std::unique_ptr<ExprAST> ParserNumberExpr(){
     getNextToken();
     return std::move(Result);
 }
+
+static std::unique_ptr<ExprAST> ParserParenExpr(){
+    getNextToken(); //eat (
+    auto V = ParseExpression();
+    if(!V)return nullptr;
+
+    if(CurTok != ')')return LogError("expected )");
+    getNextToken(); //eat )
+    return V;
+}
+
+static std::unique_ptr<ExprAST> ParseIdentifierExpr(){
+    std::string IdName = IdentifierStr;
+
+    getNextToken();
+
+    if(CurTok != '(')return llvm::make_unique<VariableExprAST>(IdName);
+
+    getNextToken(); //eat (
+    std::vector<std::unique_ptr<ExprAST>> Args;
+    if(CurTok != ')'){
+        while(true){
+            if(auto Arg = ParseExpression())
+                Args.push_back(std::move(Arg));
+            else
+                return nullptr;
+
+            if(CurTok == ')') break;
+            if(CurTok != ',')return LogError("Expected ) or , in argument list");
+            getNextToken();
+        }
+    }
+    getNextToken(); //Eat )
+    return llvm::make_unique<CallExprAST>(IdName, std::move(Args));
+}
+
+static std::unique_ptr<ExprAST> ParsePrimary(){
+    switch(CurTok){
+        default:
+            return LogError("unknown token when exception an expression");
+        case tok_identifier:
+            return ParseIdentifierExpr();
+        case tok_number:
+            return ParserNumberExpr();
+        case '(':
+            return ParserParenExpr();
+    }
+}
+
+static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,std::unique_ptr<ExprAST> LHS){
+    while(true){
+        int TokPrec = GetTokPrecedence();
+
+        if(TokPrec < ExprPrec)return LHS;
+        int BinOp = CurTok;
+        getNextToken();
+
+        auto RHS = ParsePrimary();
+        if(!RHS)return nullptr;
+        int NextPrec = GetTokPrecedence();
+
+        if(TokPrec < NextPrec){
+            RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
+            if(!RHS)return nullptr;
+        }
+
+        LHS = llvm::make_unique<BinaryExprAST>(BinOp,std::move(LHS),std::move(RHS));
+
+    }
+}
+
+static std::unique_ptr<ExprAST> ParseExpression(){
+    auto LHS = ParsePrimary();
+    if(!LHS)return nullptr;
+
+    return ParseBinOpRHS(0,std::move(LHS));
+}
+
+static std::unique_ptr<PrototypeAST> ParsePrototype(){
+    if(CurTok != tok_identifier)return LogErrorP("Excepted function name in prototype");
+
+    std::string FnName = IdentifierStr;
+    getNextToken();
+
+    if(CurTok != '(') return LogErrorP("Expected ( in prototype");
+
+    std::vector<std::string> ArgNames;
+    while(getNextToken() == tok_identifier)
+        ArgNames.push_back(IdentifierStr);
+    if(CurTok != ')')return LogErrorP("Expected ) in prototype");
+
+    getNextToken();
+    return llvm::make_unique<PrototypeAST>(FnName,std::move(ArgNames));
+}
+
+static std::unique_ptr<FunctionAST> ParseDefinition(){
+    getNextToken();
+    auto Proto = ParsePrototype();
+    if(!Proto)return nullptr;
+
+    if(auto E =ParseExpression())
+        return llvm::make_unique<FunctionAST>(std::move(Proto),std::move(E));
+
+    return nullptr;
+}
+

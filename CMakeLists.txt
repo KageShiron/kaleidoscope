@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.6.2)
 project(kaleidoscope)
 
 set(CMAKE_CXX_STANDARD 11)
@@ -18,9 +18,9 @@ add_definitions(${LLVM_DEFINITIONS})
 # that we wish to use
 llvm_map_components_to_libnames(llvm_libs support core irreader)
 
+
 # Link against LLVM libraries
 target_link_libraries(kaleidoscope ${llvm_libs})
-
 
 
 
