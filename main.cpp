@@ -30,19 +30,35 @@ static int gettok() {
         if (IdentifierStr == "extern")return tok_extern;
         return tok_identifier;
     }
-
-    if (isdigit(LastChar) || LastChar == '.') { //Number: [0-9.]+
+    if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
         std::string NumStr;
         do {
             NumStr += LastChar;
             LastChar = getchar();
-        } while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+        } while (isdigit(LastChar) || LastChar == '.');
 
-        if (LastChar == EOF)return gettok();
-        int ThisChar = LastChar;
-        LastChar = getchar();
-        return ThisChar;
+        NumVal = strtod(NumStr.c_str(), nullptr);
+        return tok_number;
     }
+
+    if (LastChar == '#') {
+        // Comment until end of line.
+        do
+            LastChar = getchar();
+        while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+
+        if (LastChar != EOF)
+            return gettok();
+    }
+
+    // Check for end of file.  Don't eat the EOF.
+    if (LastChar == EOF)
+        return tok_eof;
+
+    // Otherwise, just return the character as its ascii value.
+    int ThisChar = LastChar;
+    LastChar = getchar();
+    return ThisChar;
 }
 
 //############# AST
@@ -50,8 +66,6 @@ namespace {
     class ExprAST {
     public:
         virtual ~ExprAST() = default;
-
-        virtual Value *codegen() = 0;
     };
 
     class NumberExprAST : public ExprAST {
@@ -60,7 +74,6 @@ namespace {
     public:
         NumberExprAST(double Val) : Val(Val) {}
 
-        Value *codegen() override;
     };
 
     class VariableExprAST : public ExprAST {
@@ -69,77 +82,77 @@ namespace {
     public:
         VariableExprAST(const std::string &Name) : Name(Name) {}
 
-        Value *codegen() override;
     };
 
 
-    class BinaryExprAST : public ExprAST{
+    class BinaryExprAST : public ExprAST {
         char Op;
-        std::unique_ptr<ExprAST> LHS,RHS;
+        std::unique_ptr<ExprAST> LHS, RHS;
 
     public:
-        BinaryExprAST(char Op,std::unique_ptr<ExprAST> LHS, std::unique_ptr<ExprAST> RHS)
-            : Op(Op) , LHS(std::move(LHS)) , RHS(std::move(RHS)){}
+        BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS, std::unique_ptr<ExprAST> RHS)
+                : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
 
-        Value * codegen() override;
+//        Value * codegen() override;
     };
 
-    class CallExprAST : public ExprAST{
+    class CallExprAST : public ExprAST {
         std::string Callee;
         std::vector<std::unique_ptr<ExprAST>> Args;
 
     public:
-        CallExprAST(const std::string &Callee,std::vector<std::unique_ptr<ExprAST>> Args)
-                : Callee(Callee) , Args(std::move(Args)){}
+        CallExprAST(const std::string &Callee, std::vector<std::unique_ptr<ExprAST>> Args)
+                : Callee(Callee), Args(std::move(Args)) {}
 
-        Value *codegen() override ;
+//        Value *codegen() override ;
     };
 
-    class PrototypeAST{
+    class PrototypeAST {
         std::string Name;
         std::vector<std::string> Args;
 
     public:
-        PrototypeAST(const std::string &Name , std::vector<std::string> Args )
-                : Name(Name) , Args(std::move(Args)){}
+        PrototypeAST(const std::string &Name, std::vector<std::string> Args)
+                : Name(Name), Args(std::move(Args)) {}
 
-        Function *codegen();
-        const std::string &getName() const {return Name;}
+//        Function *codegen();
+        const std::string &getName() const { return Name; }
     };
 
-    class FunctionAST{
+    class FunctionAST {
         std::unique_ptr<PrototypeAST> Proto;
         std::unique_ptr<ExprAST> Body;
 
     public:
-        FunctionAST(std::unique_ptr<PrototypeAST> Proto,std::unique_ptr<ExprAST> Body)
-        : Proto (std::move(Proto)),Body(std::move(Body)){}
+        FunctionAST(std::unique_ptr<PrototypeAST> Proto, std::unique_ptr<ExprAST> Body)
+                : Proto(std::move(Proto)), Body(std::move(Body)) {}
 
-        Function *codegen();
+//        Function *codegen();
     };
 
 }
 
 //############ Parser
 static int CurTok;
-static int getNextToken(){return CurTok = gettok();}
 
-static std::map<char,int> BinopPrecendence;
+static int getNextToken() { return CurTok = gettok(); }
+
+static std::map<char, int> BinopPrecendence;
 
 static int GetTokPrecedence() {
-    if(!isascii(CurTok))return -1;
+    if (!isascii(CurTok))return -1;
 
     int TokPrec = BinopPrecendence[CurTok];
-    if(TokPrec <= 0)return -1;
+    if (TokPrec <= 0)return -1;
     return TokPrec;
 }
 
-std::unique_ptr<ExprAST> LogError(const char *str){
-    fprintf(stderr,"Error: %s\n" , str);
+std::unique_ptr<ExprAST> LogError(const char *str) {
+    fprintf(stderr, "Error: %s\n", str);
     return nullptr;
 }
 
-std::unique_ptr<PrototypeAST> LogErrorP(const char *str){
+std::unique_ptr<PrototypeAST> LogErrorP(const char *str) {
     LogError(str);
     return nullptr;
 }
@@ -147,40 +160,40 @@ std::unique_ptr<PrototypeAST> LogErrorP(const char *str){
 static std::unique_ptr<ExprAST> ParseExpression();
 
 // numberexpr ::= number
-static std::unique_ptr<ExprAST> ParserNumberExpr(){
+static std::unique_ptr<ExprAST> ParserNumberExpr() {
     auto Result = llvm::make_unique<NumberExprAST>(NumVal);
     getNextToken();
     return std::move(Result);
 }
 
-static std::unique_ptr<ExprAST> ParserParenExpr(){
+static std::unique_ptr<ExprAST> ParserParenExpr() {
     getNextToken(); //eat (
     auto V = ParseExpression();
-    if(!V)return nullptr;
+    if (!V)return nullptr;
 
-    if(CurTok != ')')return LogError("expected )");
+    if (CurTok != ')')return LogError("expected )");
     getNextToken(); //eat )
     return V;
 }
 
-static std::unique_ptr<ExprAST> ParseIdentifierExpr(){
+static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
     std::string IdName = IdentifierStr;
 
     getNextToken();
 
-    if(CurTok != '(')return llvm::make_unique<VariableExprAST>(IdName);
+    if (CurTok != '(')return llvm::make_unique<VariableExprAST>(IdName);
 
     getNextToken(); //eat (
     std::vector<std::unique_ptr<ExprAST>> Args;
-    if(CurTok != ')'){
-        while(true){
-            if(auto Arg = ParseExpression())
+    if (CurTok != ')') {
+        while (true) {
+            if (auto Arg = ParseExpression())
                 Args.push_back(std::move(Arg));
             else
                 return nullptr;
 
-            if(CurTok == ')') break;
-            if(CurTok != ',')return LogError("Expected ) or , in argument list");
+            if (CurTok == ')') break;
+            if (CurTok != ',')return LogError("Expected ) or , in argument list");
             getNextToken();
         }
     }
@@ -188,8 +201,8 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr(){
     return llvm::make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
-static std::unique_ptr<ExprAST> ParsePrimary(){
-    switch(CurTok){
+static std::unique_ptr<ExprAST> ParsePrimary() {
+    switch (CurTok) {
         default:
             return LogError("unknown token when exception an expression");
         case tok_identifier:
@@ -201,60 +214,133 @@ static std::unique_ptr<ExprAST> ParsePrimary(){
     }
 }
 
-static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,std::unique_ptr<ExprAST> LHS){
-    while(true){
+static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS) {
+    while (true) {
         int TokPrec = GetTokPrecedence();
 
-        if(TokPrec < ExprPrec)return LHS;
+        if (TokPrec < ExprPrec)return LHS;
         int BinOp = CurTok;
         getNextToken();
 
         auto RHS = ParsePrimary();
-        if(!RHS)return nullptr;
+        if (!RHS)return nullptr;
         int NextPrec = GetTokPrecedence();
 
-        if(TokPrec < NextPrec){
+        if (TokPrec < NextPrec) {
             RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
-            if(!RHS)return nullptr;
+            if (!RHS)return nullptr;
         }
 
-        LHS = llvm::make_unique<BinaryExprAST>(BinOp,std::move(LHS),std::move(RHS));
+        LHS = llvm::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
 
     }
 }
 
-static std::unique_ptr<ExprAST> ParseExpression(){
+static std::unique_ptr<ExprAST> ParseExpression() {
     auto LHS = ParsePrimary();
-    if(!LHS)return nullptr;
+    if (!LHS)return nullptr;
 
-    return ParseBinOpRHS(0,std::move(LHS));
+    return ParseBinOpRHS(0, std::move(LHS));
 }
 
-static std::unique_ptr<PrototypeAST> ParsePrototype(){
-    if(CurTok != tok_identifier)return LogErrorP("Excepted function name in prototype");
+static std::unique_ptr<PrototypeAST> ParsePrototype() {
+    if (CurTok != tok_identifier)return LogErrorP("Excepted function name in prototype");
 
     std::string FnName = IdentifierStr;
     getNextToken();
 
-    if(CurTok != '(') return LogErrorP("Expected ( in prototype");
+    if (CurTok != '(') return LogErrorP("Expected ( in prototype");
 
     std::vector<std::string> ArgNames;
-    while(getNextToken() == tok_identifier)
+    while (getNextToken() == tok_identifier)
         ArgNames.push_back(IdentifierStr);
-    if(CurTok != ')')return LogErrorP("Expected ) in prototype");
+    if (CurTok != ')')return LogErrorP("Expected ) in prototype");
 
     getNextToken();
-    return llvm::make_unique<PrototypeAST>(FnName,std::move(ArgNames));
+    return llvm::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 
-static std::unique_ptr<FunctionAST> ParseDefinition(){
+static std::unique_ptr<FunctionAST> ParseDefinition() {
     getNextToken();
     auto Proto = ParsePrototype();
-    if(!Proto)return nullptr;
+    if (!Proto)return nullptr;
 
-    if(auto E =ParseExpression())
-        return llvm::make_unique<FunctionAST>(std::move(Proto),std::move(E));
+    if (auto E = ParseExpression())
+        return llvm::make_unique<FunctionAST>(std::move(Proto), std::move(E));
 
     return nullptr;
 }
 
+static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
+    if (auto E = ParseExpression()) {
+        auto Proto = llvm::make_unique<PrototypeAST>("__anon_expr", std::vector<std::string>());
+        return llvm::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    }
+    return nullptr;
+}
+
+
+static std::unique_ptr<PrototypeAST> ParseExtern() {
+    getNextToken();
+    return ParsePrototype();
+}
+
+static void HandleDefinition() {
+    if (ParseDefinition()) {
+        fprintf(stderr, "Parsed a function definition.\n");
+    } else {
+        getNextToken();
+    }
+}
+
+static void HandleExtern() {
+    if (ParseExtern()) {
+        fprintf(stderr, "Parsed an extern\n");
+    } else {
+        getNextToken();
+    }
+}
+
+static void HandleTopLevelExpression() {
+    if (ParseTopLevelExpr()) {
+        fprintf(stderr, "Parsed a top level expr\n");
+    } else {
+        getNextToken();
+    }
+}
+
+static void MainLoop() {
+    while (true) {
+        fprintf(stderr, "ready> ");
+        switch (CurTok) {
+            case tok_eof:
+                return;
+            case ';':
+                getNextToken();
+                break;
+            case tok_def:
+                HandleDefinition();
+                break;
+            case tok_extern:
+                HandleExtern();
+                break;
+            default:
+                HandleTopLevelExpression();
+                break;
+        }
+    }
+}
+
+int main() {
+    BinopPrecendence['<'] = 10;
+    BinopPrecendence['+'] = 20;
+    BinopPrecendence['-'] = 30;
+    BinopPrecendence['*'] = 40;
+
+    fprintf(stderr, "ready>");
+    getNextToken();
+
+    MainLoop();
+
+    return 0;
+}
