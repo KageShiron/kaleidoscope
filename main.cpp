@@ -6,21 +6,33 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "KaleidoscopeJIT.h"
 #include <algorithm>
+#include <cassert>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
-#include <fcntl.h> /* AT_* 定数の定義 */
-#include <sys/stat.h>
 
 using namespace llvm;
+using namespace llvm::orc;
+
+static std::unique_ptr<KaleidoscopeJIT> TheJIT;
+static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
+
+static void InitializeModuleAndPassManager();
 
 
 enum Tokenn {
@@ -390,6 +402,10 @@ Function *FunctionAST::codegen(){
 
     NamedValues.clear();
 
+    for (auto &Arg : TheFunction->args()) {
+        NamedValues[Arg.getName()] = &Arg;
+    }
+
     if (Value *RetVal = Body->codegen()) {
         Builder.CreateRet(RetVal);
         verifyFunction(*TheFunction);
@@ -428,14 +444,26 @@ static void HandleExtern() {
         getNextToken();
     }
 }
-
 static void HandleTopLevelExpression() {
     // Evaluate a top-level expression into an anonymous function.
     if (auto FnAST = ParseTopLevelExpr()) {
-        if (auto *FnIR = FnAST->codegen()) {
-            fprintf(stderr, "Read top-level expression:");
-            FnIR->print(errs());
-            fprintf(stderr, "\n");
+        if (FnAST->codegen()) {
+            // JIT the module containing the anonymous expression, keeping a handle so
+            // we can free it later.
+            auto H = TheJIT->addModule(std::move(TheModule));
+            InitializeModuleAndPassManager();
+
+            // Search the JIT for the __anon_expr symbol.
+            auto ExprSymbol = TheJIT->findSymbol("__anon_expr");
+            assert(ExprSymbol && "Function not found");
+
+            // Get the symbol's address and cast it to the right type (takes no
+            // arguments, returns a double) so we can call it as a native function.
+            double (*FP)() = (double (*)())(intptr_t)cantFail(ExprSymbol.getAddress());
+            fprintf(stderr, "Evaluated to %f\n", FP());
+
+            // Delete the anonymous expression module from the JIT.
+            TheJIT->removeModule(H);
         }
     } else {
         // Skip token for error recovery.
@@ -465,21 +493,60 @@ static void MainLoop() {
     }
 }
 
+///////////////////
+// JIT
+
+static void InitializeModuleAndPassManager(){
+    TheModule = llvm::make_unique<Module>("my cool jit", TheContext);
+    TheModule->setDataLayout(TheJIT->getTargetMachine().createDataLayout());
+
+    TheFPM = llvm::make_unique<legacy::FunctionPassManager>(TheModule.get());
+
+    TheFPM->add(createInstructionCombiningPass());
+    TheFPM->add(createReassociatePass());
+    TheFPM->add(createGVNPass());
+    TheFPM->add(createCFGSimplificationPass());
+
+    TheFPM->doInitialization();
+
+}
+
+#ifdef LLVM_ON_WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+extern "C" DLLEXPORT double putchard(double X)
+{
+    fputc(char(X), stderr);
+    return 0;
+}
+
+extern "C" DLLEXPORT double printd(double X){
+    fprintf(stderr, "%f\n", X);
+    return 0;
+}
+
 int main() {
+    InitializeNativeTarget();;
+    InitializeNativeTargetAsmPrinter();
+    InitializeNativeTargetAsmParser();
+
     BinopPrecendence['<'] = 10;
     BinopPrecendence['+'] = 20;
     BinopPrecendence['-'] = 30;
     BinopPrecendence['*'] = 40;
 
-    fprintf(stderr, "ready>");
+    fprintf(stderr, "ready> ");
     getNextToken();
 
-    TheModule = llvm::make_unique<Module>("my cool jit", TheContext);
+    TheJIT = llvm::make_unique<KaleidoscopeJIT>();
+
+    InitializeModuleAndPassManager();
 
     MainLoop();
 
-    //print out all of the generated code
-    TheModule->print(errs(), nullptr);
 
     return 0;
 }
