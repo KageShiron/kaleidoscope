@@ -32,6 +32,7 @@ using namespace llvm::orc;
 static std::unique_ptr<KaleidoscopeJIT> TheJIT;
 static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
 
+
 static void InitializeModuleAndPassManager();
 
 
@@ -44,6 +45,7 @@ enum Tokenn {
 };
 static std::string IdentifierStr;
 static double NumVal;
+
 
 static int gettok() {
     static int LastChar = ' ';
@@ -166,6 +168,8 @@ namespace {
 
 //############ Parser
 static int CurTok;
+static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+
 
 static int getNextToken() { return CurTok = gettok(); }
 
@@ -326,6 +330,18 @@ static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
 static std::map<std::string,Value *> NamedValues;
 
+
+Function *getFunction(std::string Name){
+    if(auto *F = TheModule->getFunction(Name))return F;
+
+    auto Fl = FunctionProtos.find(Name);
+    if(Fl != FunctionProtos.end())
+        return Fl->second->codegen();
+
+    return nullptr;
+}
+
+
 Value *LogErrorV(const char *Str){
     LogError(Str);
     return nullptr;
@@ -365,7 +381,7 @@ Value *BinaryExprAST::codegen() {
 
 
 Value *CallExprAST::codegen() {
-    Function *CalleeF = TheModule->getFunction(Callee);
+    Function *CalleeF = getFunction(Callee);
     if(!CalleeF)return LogErrorV("Unknown function referencecd");
 
     if(CalleeF->arg_size() != Args.size())return LogErrorV("incorrect # arguments passed");
@@ -391,8 +407,14 @@ Function *PrototypeAST::codegen() {
 
 }
 
+
 Function *FunctionAST::codegen(){
-    Function *TheFunction = TheModule->getFunction(Proto->getName());
+
+    auto &P = *Proto;
+    FunctionProtos[Proto->getName()] = std::move(Proto);
+
+
+    Function *TheFunction = getFunction(P.getName());
 
     if(!TheFunction)TheFunction = Proto->codegen();
     if(!TheFunction)return nullptr;
@@ -409,6 +431,7 @@ Function *FunctionAST::codegen(){
     if (Value *RetVal = Body->codegen()) {
         Builder.CreateRet(RetVal);
         verifyFunction(*TheFunction);
+        TheFPM->run(*TheFunction);
         return TheFunction;
     }
     //Error reading body
@@ -425,6 +448,8 @@ static void HandleDefinition() {
             fprintf(stderr, "Parsed a function definition.\n");
             FnIR->print(errs());
             fprintf(stderr, "\n");
+            TheJIT->addModule(std::move(TheModule));
+            InitializeModuleAndPassManager();
         }
     } else {
         getNextToken();
@@ -438,6 +463,7 @@ static void HandleExtern() {
             fprintf(stderr, "Read extern: ");
             FnIR->print(errs());
             fprintf(stderr, "\n");
+            FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
         }
     } else {
         // Skip token for error recovery.
