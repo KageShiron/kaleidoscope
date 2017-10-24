@@ -41,7 +41,10 @@ enum Tokenn {
     tok_def = -2,
     tok_extern = -3,
     tok_identifier = -4,
-    tok_number = -5
+    tok_number = -5,
+    tok_if = -6,
+    tok_then = -7,
+    tok_else = -8
 };
 static std::string IdentifierStr;
 static double NumVal;
@@ -59,6 +62,10 @@ static int gettok() {
 
         if (IdentifierStr == "def")return tok_def;
         if (IdentifierStr == "extern")return tok_extern;
+        if(IdentifierStr == "def")return tok_def;
+        if(IdentifierStr == "if")return tok_if;
+        if(IdentifierStr == "then") return tok_then;
+        if(IdentifierStr == "else") return tok_else;
         return tok_identifier;
     }
     if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
@@ -164,6 +171,18 @@ namespace {
         Function *codegen();
     };
 
+
+    class IfExprAST : public ExprAST {
+        std::unique_ptr<ExprAST> Cond,Then,Else;
+
+    public:
+        IfExprAST(std::unique_ptr<ExprAST> Cond,std::unique_ptr<ExprAST> Then,
+        std::unique_ptr<ExprAST> Else)
+                : Cond(std::move(Cond)),Then(std::move(Then)),Else(std::move(Else)){}
+
+        Value *codegen() override;
+    };
+
 }
 
 //############ Parser
@@ -237,6 +256,30 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
     return llvm::make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
+
+static std::unique_ptr<ExprAST> ParseIfExpr(){
+    getNextToken();
+
+    auto Cond = ParseExpression();
+    if(!Cond)return nullptr;
+
+    if(CurTok != tok_then)
+        return LogError("expected then");
+
+    auto Then = ParseExpression();
+    if(!Then)return nullptr;
+
+    if(CurTok != tok_else)
+        return LogError("expected else");
+
+    getNextToken();
+
+    auto Else = ParseExpression();
+    if(!Else)return nullptr;
+
+    return llvm::make_unique<IfExprAST>(std::move(Cond), std::move(Then), std::move(Else));
+}
+
 static std::unique_ptr<ExprAST> ParsePrimary() {
     switch (CurTok) {
         default:
@@ -247,6 +290,8 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
             return ParseNumberExpr();
         case '(':
             return ParseParenExpr();
+        case tok_if:
+            return ParseIfExpr();
     }
 }
 
@@ -320,6 +365,8 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
     getNextToken();
     return ParsePrototype();
 }
+
+
 
 
 ////////////////////////
@@ -440,6 +487,29 @@ Function *FunctionAST::codegen(){
 
 }
 
+Value *IfExprAST::codegen() {
+    Value *CondV = Cond->codegen();
+    if (!CondV)return nullptr;
+
+    CondV = Builder.CreateFCmpONE(
+            CondV, ConstantFP::get(TheContext, APFloat(0, 0)), "ifcond");
+
+    Function *TheFunction = Builder.GetInsertBlock()->getParent;
+
+    BasicBlock *ThenBB = BasicBlock::Create(TheContext, "then", TheFunction);
+    BasicBlock *ElseBB = BasicBlock::Create(TheContext, "else");
+    BasicBlock *MergeBB = BasicBlock::Create(TheContext, "ifcont");
+
+    Builder.CreateCondBr(CondV, ThenBB, ElseBB);
+    Builder.SetInsertPoint(ThenBB);
+
+    Value *ThenV = Then->codegen();
+    if(!ThenV)return nullptr;
+    Builder.CreateBr(MergeBB);
+
+    ThenBB = Builder.GetInsertBlock();
+
+}
 
 
 static void HandleDefinition() {
