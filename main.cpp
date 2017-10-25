@@ -44,7 +44,9 @@ enum Tokenn {
     tok_number = -5,
     tok_if = -6,
     tok_then = -7,
-    tok_else = -8
+    tok_else = -8,
+    tok_for = -9,
+    tok_in = -10
 };
 static std::string IdentifierStr;
 static double NumVal;
@@ -66,6 +68,8 @@ static int gettok() {
         if(IdentifierStr == "if")return tok_if;
         if(IdentifierStr == "then") return tok_then;
         if(IdentifierStr == "else") return tok_else;
+        if(IdentifierStr == "for")return tok_for;
+        if(IdentifierStr == "in")return tok_in;
         return tok_identifier;
     }
     if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
@@ -183,6 +187,21 @@ namespace {
         Value *codegen() override;
     };
 
+
+    class ForExprAST : public ExprAST{
+        std::string VarName;
+        std::unique_ptr<ExprAST> Start,End,Step,Body;
+
+    public:
+        ForExpr(const std::string &VarName, std::unique_ptr<ExprAST> Start,
+                std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
+                std::unique_ptr<ExprAST> Body) :
+                VarName(VarName),Start(std::move(Start)),End(std::move(End)),
+                Step(std::move(Step)),Body(std::move(Body)){    }
+
+        Value *codegen() override ;
+    };
+
 }
 
 //############ Parser
@@ -280,20 +299,6 @@ static std::unique_ptr<ExprAST> ParseIfExpr(){
     return llvm::make_unique<IfExprAST>(std::move(Cond), std::move(Then), std::move(Else));
 }
 
-static std::unique_ptr<ExprAST> ParsePrimary() {
-    switch (CurTok) {
-        default:
-            return LogError("unknown token when exception an expression");
-        case tok_identifier:
-            return ParseIdentifierExpr();
-        case tok_number:
-            return ParseNumberExpr();
-        case '(':
-            return ParseParenExpr();
-        case tok_if:
-            return ParseIfExpr();
-    }
-}
 
 static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS) {
     while (true) {
@@ -366,6 +371,62 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
     return ParsePrototype();
 }
 
+
+static std::unique_ptr<ExprAST> ParseForExpr(){
+    getNextToken();
+
+    if(CurTok != tok_identifier)return LogError("expected idenrifier after for");
+
+    std::string idName = IdentifierStr;
+    getNextToken();
+
+    if(CurTok != '=')
+        return LogError("expected = after for");
+    getNextToken();
+
+    auto Start = ParseExpression();
+    if(!Start)return nullptr;
+
+    if(CurTok != ',')return LogError("expected , after for start valeu");
+
+    getNextToken();
+    auto End = ParseExpression();
+    if(!End)return nullptr;
+
+    std::unique_ptr<ExprAST> Step;
+    if(CurTok == ',') {
+        getNextToken();
+        Step = ParseExpression();
+        if(!Step)return nullptr;
+    }
+
+    if (CurTok != tok_in) return LogError("expected 'in' after for");
+    getNextToken();
+
+    auto Body = ParseExpression();
+    if(!Body)return nullptr;
+
+    return llvm::make_unique<ForExprAST>(idName, std::move(Start), std::move(End), std::move(Step),
+                                         std::move(Body));
+}
+
+
+static std::unique_ptr<ExprAST> ParsePrimary() {
+    switch (CurTok) {
+        default:
+            return LogError("unknown token when exception an expression");
+        case tok_identifier:
+            return ParseIdentifierExpr();
+        case tok_number:
+            return ParseNumberExpr();
+        case '(':
+            return ParseParenExpr();
+        case tok_if:
+            return ParseIfExpr();
+        case tok_for:
+            return ParseForExpr();
+    }
+}
 
 
 
@@ -494,7 +555,7 @@ Value *IfExprAST::codegen() {
     CondV = Builder.CreateFCmpONE(
             CondV, ConstantFP::get(TheContext, APFloat(0, 0)), "ifcond");
 
-    Function *TheFunction = Builder.GetInsertBlock()->getParent;
+    Function *ThenFunction = Builder.GetInsertBlock()->getParent();
 
     BasicBlock *ThenBB = BasicBlock::Create(TheContext, "then", TheFunction);
     BasicBlock *ElseBB = BasicBlock::Create(TheContext, "else");
@@ -508,6 +569,26 @@ Value *IfExprAST::codegen() {
     Builder.CreateBr(MergeBB);
 
     ThenBB = Builder.GetInsertBlock();
+    ThenFunction->getBasicBlockList().push_bac(ElseBB);
+    Builder.SetInsertPoint(ElseBB);
+
+    Value *ElseV = Else->codegen();
+    if(!ElseV)return nullptr;
+
+    Builder.CreateBr(MergeBB);
+    ElseBB = Builder.GetInsertBlock();
+
+    ThenFunction->getBasicBlockList().push_back(MergeBB);
+    Builder.SetInsertPoint(MergeBB);
+    PHINode *PN = Builder.CreatePHI(Type::getDoubleTy(TheContext), 2, "iftmp");
+    PN->addIncoming(ThenV, ThenBB);
+    PN->addIncoming(ElseV, ElseBB);
+    return PN;
+}
+Value *ForExprAST::codegen() {
+    Value *StartVal = Start->codegen();
+    if (!StartVal)return nullptr;
+
 
 }
 
