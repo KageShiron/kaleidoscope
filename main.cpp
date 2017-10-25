@@ -597,6 +597,7 @@ Value *ForExprAST::codegen() {
     BasicBlock *LoopBB = BasicBlock::Create(TheContext, "loop", TheFunction);
 
     Builder.CreateBr(LoopBB);
+    Builder.SetInsertPoint(LoopBB);
     PHINode *Variable = Builder.CreatePHI(Type::getDoubleTy(TheContext),2,VarName.c_str());
     Variable->addIncoming(StartVal, PreheaderBB);
 
