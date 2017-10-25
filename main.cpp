@@ -193,7 +193,7 @@ namespace {
         std::unique_ptr<ExprAST> Start,End,Step,Body;
 
     public:
-        ForExpr(const std::string &VarName, std::unique_ptr<ExprAST> Start,
+        ForExprAST(const std::string &VarName, std::unique_ptr<ExprAST> Start,
                 std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
                 std::unique_ptr<ExprAST> Body) :
                 VarName(VarName),Start(std::move(Start)),End(std::move(End)),
@@ -300,6 +300,65 @@ static std::unique_ptr<ExprAST> ParseIfExpr(){
 }
 
 
+
+
+static std::unique_ptr<ExprAST> ParseForExpr(){
+    getNextToken();
+
+    if(CurTok != tok_identifier)return LogError("expected idenrifier after for");
+
+    std::string idName = IdentifierStr;
+    getNextToken();
+
+    if(CurTok != '=')
+        return LogError("expected = after for");
+    getNextToken();
+
+    auto Start = ParseExpression();
+    if(!Start)return nullptr;
+
+    if(CurTok != ',')return LogError("expected , after for start valeu");
+
+    getNextToken();
+    auto End = ParseExpression();
+    if(!End)return nullptr;
+
+    std::unique_ptr<ExprAST> Step;
+    if(CurTok == ',') {
+        getNextToken();
+        Step = ParseExpression();
+        if(!Step)return nullptr;
+    }
+
+    if (CurTok != tok_in) return LogError("expected 'in' after for");
+    getNextToken();
+
+    auto Body = ParseExpression();
+    if(!Body)return nullptr;
+
+    return llvm::make_unique<ForExprAST>(idName, std::move(Start), std::move(End), std::move(Step),
+                                         std::move(Body));
+}
+
+
+static std::unique_ptr<ExprAST> ParsePrimary() {
+    switch (CurTok) {
+        default:
+            return LogError("unknown token when exception an expression");
+        case tok_identifier:
+            return ParseIdentifierExpr();
+        case tok_number:
+            return ParseNumberExpr();
+        case '(':
+            return ParseParenExpr();
+        case tok_if:
+            return ParseIfExpr();
+        case tok_for:
+            return ParseForExpr();
+    }
+}
+
+
 static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS) {
     while (true) {
         int TokPrec = GetTokPrecedence();
@@ -371,62 +430,6 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
     return ParsePrototype();
 }
 
-
-static std::unique_ptr<ExprAST> ParseForExpr(){
-    getNextToken();
-
-    if(CurTok != tok_identifier)return LogError("expected idenrifier after for");
-
-    std::string idName = IdentifierStr;
-    getNextToken();
-
-    if(CurTok != '=')
-        return LogError("expected = after for");
-    getNextToken();
-
-    auto Start = ParseExpression();
-    if(!Start)return nullptr;
-
-    if(CurTok != ',')return LogError("expected , after for start valeu");
-
-    getNextToken();
-    auto End = ParseExpression();
-    if(!End)return nullptr;
-
-    std::unique_ptr<ExprAST> Step;
-    if(CurTok == ',') {
-        getNextToken();
-        Step = ParseExpression();
-        if(!Step)return nullptr;
-    }
-
-    if (CurTok != tok_in) return LogError("expected 'in' after for");
-    getNextToken();
-
-    auto Body = ParseExpression();
-    if(!Body)return nullptr;
-
-    return llvm::make_unique<ForExprAST>(idName, std::move(Start), std::move(End), std::move(Step),
-                                         std::move(Body));
-}
-
-
-static std::unique_ptr<ExprAST> ParsePrimary() {
-    switch (CurTok) {
-        default:
-            return LogError("unknown token when exception an expression");
-        case tok_identifier:
-            return ParseIdentifierExpr();
-        case tok_number:
-            return ParseNumberExpr();
-        case '(':
-            return ParseParenExpr();
-        case tok_if:
-            return ParseIfExpr();
-        case tok_for:
-            return ParseForExpr();
-    }
-}
 
 
 
@@ -553,11 +556,11 @@ Value *IfExprAST::codegen() {
     if (!CondV)return nullptr;
 
     CondV = Builder.CreateFCmpONE(
-            CondV, ConstantFP::get(TheContext, APFloat(0, 0)), "ifcond");
+            CondV, ConstantFP::get(TheContext, APFloat(0.0)), "ifcond");
 
     Function *ThenFunction = Builder.GetInsertBlock()->getParent();
 
-    BasicBlock *ThenBB = BasicBlock::Create(TheContext, "then", TheFunction);
+    BasicBlock *ThenBB = BasicBlock::Create(TheContext, "then", ThenFunction);
     BasicBlock *ElseBB = BasicBlock::Create(TheContext, "else");
     BasicBlock *MergeBB = BasicBlock::Create(TheContext, "ifcont");
 
@@ -569,7 +572,7 @@ Value *IfExprAST::codegen() {
     Builder.CreateBr(MergeBB);
 
     ThenBB = Builder.GetInsertBlock();
-    ThenFunction->getBasicBlockList().push_bac(ElseBB);
+    ThenFunction->getBasicBlockList().push_back(ElseBB);
     Builder.SetInsertPoint(ElseBB);
 
     Value *ElseV = Else->codegen();
@@ -589,7 +592,45 @@ Value *ForExprAST::codegen() {
     Value *StartVal = Start->codegen();
     if (!StartVal)return nullptr;
 
+    Function *TheFunction = Builder.GetInsertBlock()->getParent();
+    BasicBlock *PreheaderBB = Builder.GetInsertBlock();
+    BasicBlock *LoopBB = BasicBlock::Create(TheContext, "loop", TheFunction);
 
+    Builder.CreateBr(LoopBB);
+    PHINode *Variable = Builder.CreatePHI(Type::getDoubleTy(TheContext),2,VarName.c_str());
+    Variable->addIncoming(StartVal, PreheaderBB);
+
+    Value *OldVal = NamedValues[VarName];
+    NamedValues[VarName] = Variable;
+
+    if (!Body->codegen())return nullptr;
+
+    Value *StepVal = nullptr;
+    if(Step) {
+        StepVal = Step->codegen();
+        if (!StepVal)return nullptr;
+    }else{
+        StepVal = ConstantFP::get(TheContext, APFloat(1.0));
+    }
+    Value *NextVar = Builder.CreateFAdd(Variable, StepVal, "nextvar");
+    Value *EndCond = End->codegen();
+
+    if(!EndCond)return nullptr;
+    EndCond = Builder.CreateFCmpONE(EndCond, ConstantFP::get(TheContext, APFloat(0.0)), "loopcond");
+
+    BasicBlock *LoopEndBB = Builder.GetInsertBlock();
+    BasicBlock *AfterBB = BasicBlock::Create(TheContext, "afterloop", TheFunction);
+
+    Builder.CreateCondBr(EndCond, LoopBB, AfterBB);
+    Builder.SetInsertPoint(AfterBB);
+
+    Variable->addIncoming(NextVar, LoopEndBB);
+    if(OldVal)
+        NamedValues[VarName] = OldVal;
+    else
+        NamedValues.erase(VarName);
+
+    return Constant::getNullValue(Type::getDoubleTy(TheContext));
 }
 
 
